@@ -6,7 +6,7 @@ const PORT = process.env.PORT || 3000;
 
 // --- CONFIGURATION ---
 const PERIOD = 21;
-const MAX_CANDLES = 100; // Keep 100 candles for stable EMA calculation
+const MAX_CANDLES = 100;
 
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
@@ -15,7 +15,7 @@ const PAIRS = {
     'BTCUSDT': 'BTC/USDT',
     'ETHUSDT': 'ETH/USDT',
     'SOLUSDT': 'SOL/USDT',
-    'RENDERUSDT': 'RENDER/USDT' // Assuming 'River' meant RENDER
+    'RENDERUSDT': 'RENDER/USDT' 
 };
 
 let history = {};
@@ -27,7 +27,7 @@ Object.keys(PAIRS).forEach(sym => {
 
 // --- 1. EXPRESS SERVER (For Render & CronJobs) ---
 app.get('/ping', (req, res) => {
-    res.status(200).send("Bot is awake and monitoring 5s Binance candles!");
+    res.status(200).send("Binance5sEmaBot is awake and monitoring 5s Binance candles!");
 });
 
 app.listen(PORT, () => {
@@ -119,12 +119,12 @@ function calculateAllEMA(symbol) {
     }
 }
 
-// Fetch recent 1s history to instantly build 5s candles
+// Using Binance's 'data-api.binance.vision' endpoint to bypass US Server 451 errors
 async function fetchHistoricalData() {
-    console.log("Fetching historical 1s data from Binance to build 5s candles...");
+    console.log("Fetching historical 1s data from Binance Vision API to build 5s candles...");
     for (const sym of Object.keys(PAIRS)) {
         try {
-            const res = await fetch(`https://api.binance.com/api/v3/klines?symbol=${sym}&interval=1s&limit=500`);
+            const res = await fetch(`https://data-api.binance.vision/api/v3/klines?symbol=${sym}&interval=1s&limit=500`);
             if (!res.ok) throw new Error(`HTTP ${res.status}`);
             const data = await res.json();
             
@@ -154,8 +154,8 @@ async function fetchHistoricalData() {
             calculateAllEMA(sym);
             console.log(`Loaded ${history[sym].length} 5s candles for ${PAIRS[sym]}`);
         } catch (e) {
-            console.error(`Could not fetch REST data for ${sym} (Likely IP restriction). Building live via WebSocket...`);
-            history[sym] = []; // Will build naturally via WS stream
+            console.error(`Could not fetch REST data for ${sym}. Building live via WebSocket...`, e.message);
+            history[sym] = []; 
         }
     }
 }
@@ -163,12 +163,13 @@ async function fetchHistoricalData() {
 let ws;
 function connectBinanceWS() {
     const streams = Object.keys(PAIRS).map(sym => `${sym.toLowerCase()}@kline_1s`).join('/');
-    const wsUrl = `wss://stream.binance.com:9443/ws/${streams}`;
+    // Using 'data-stream.binance.vision' to bypass US Server 451 errors
+    const wsUrl = `wss://data-stream.binance.vision:9443/ws/${streams}`;
     
     ws = new WebSocket(wsUrl);
     
     ws.on('open', () => {
-        console.log("Connected to Binance WebSocket stream. Live monitoring 5s candles.");
+        console.log("Connected to Binance Vision WebSocket. Live monitoring 5s candles.");
     });
     
     ws.on('message', (data) => {
