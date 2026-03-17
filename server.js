@@ -27,7 +27,7 @@ Object.keys(PAIRS).forEach(sym => {
 
 // --- 1. EXPRESS SERVER (For Render & CronJobs) ---
 app.get('/ping', (req, res) => {
-    res.status(200).send("Binance5sEmaBot is awake and monitoring 5s Binance candles!");
+    res.status(200).send("Binance 1-Hour EMA Bot is awake!");
 });
 
 app.listen(PORT, () => {
@@ -39,11 +39,11 @@ async function sendTelegramAlert(symbol, price, ema) {
     if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) return;
 
     const now = Date.now();
-    // 30-second cooldown to avoid spam on volatile 5s candles
-    if (now - lastAlertTime[symbol] < 30000) return; 
+    // 5-minute cooldown to prevent spam if price dances right on the EMA line
+    if (now - lastAlertTime[symbol] < 300000) return; 
 
     const pairName = PAIRS[symbol];
-    const msg = `🚨 *${pairName} ALERT*\n\nPrice touched the 21 EMA!\nPrice: ${price.toFixed(4)}\nEMA: ${ema.toFixed(4)}\nTimeframe: 5s`;
+    const msg = `🚨 *${pairName} ALERT*\n\nPrice touched the 21 EMA!\nPrice: ${price.toFixed(4)}\nEMA: ${ema.toFixed(4)}\nTimeframe: 1h`;
     const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage?chat_id=${TELEGRAM_CHAT_ID}&text=${encodeURIComponent(msg)}&parse_mode=Markdown`;
 
     try {
@@ -59,7 +59,7 @@ async function sendTelegramAlert(symbol, price, ema) {
 let lastUpdateId = 0;
 
 async function sendStatusMessage(targetChatId) {
-    let statusMsg = `📊 *Live Market Status (5s Timeframe)*\n\n`;
+    let statusMsg = `📊 *Live Market Status (1-Hour Timeframe)*\n\n`;
     let warmingUp = false;
 
     for (const sym in PAIRS) {
@@ -74,9 +74,9 @@ async function sendStatusMessage(targetChatId) {
     }
 
     if (warmingUp) {
-        statusMsg = "⏳ *Bot is currently warming up!*\nGathering 5s candles. Please try again in about a minute.";
+        statusMsg = "⏳ *Bot is currently warming up!*\nGathering 1h candles. Please try again in a moment.";
     } else {
-        statusMsg += `\n_Monitoring 5s timeframe 24/7..._`;
+        statusMsg += `\n_Monitoring 1h timeframe 24/7..._`;
     }
     
     await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage?chat_id=${targetChatId}&text=${encodeURIComponent(statusMsg)}&parse_mode=Markdown`);
@@ -119,42 +119,65 @@ function calculateAllEMA(symbol) {
     }
 }
 
-// Using Binance's 'data-api.binance.vision' endpoint to bypass US Server 451 errors
+// Check and Announce the Last Cross on Startup
+async function announceStartupCrosses() {
+    let msg = `🚀 *Bot Deployed Successfully*\n_Monitoring 1-Hour Timeframe_\n\n*Last 21 EMA Touches:*\n`;
+    
+    for (const sym in PAIRS) {
+        const symHistory = history[sym];
+        let lastCross = null;
+        
+        // Loop backwards to find the most recent touch
+        for (let i = symHistory.length - 1; i >= 0; i--) {
+            const curr = symHistory[i];
+            if (curr.ema && curr.low <= curr.ema && curr.high >= curr.ema) {
+                lastCross = curr;
+                break;
+            }
+        }
+
+        if (lastCross) {
+            const dateStr = new Date(lastCross.time).toLocaleString('en-US', { timeZone: 'Asia/Kolkata' });
+            msg += `• *${PAIRS[sym]}*: ${lastCross.ema.toFixed(4)} (on ${dateStr} IST)\n`;
+        } else {
+            msg += `• *${PAIRS[sym]}*: No touch in the last 100 hours\n`;
+        }
+    }
+
+    console.log("\n--- STARTUP REPORT ---");
+    console.log(msg.replace(/\*/g, '').replace(/_/g, '')); // Log to Render console without markdown
+    console.log("----------------------\n");
+
+    if (TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID) {
+        const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage?chat_id=${TELEGRAM_CHAT_ID}&text=${encodeURIComponent(msg)}&parse_mode=Markdown`;
+        await fetch(url).catch(e => console.error("Failed to send startup Telegram message:", e));
+    }
+}
+
+// Fetch 1-Hour Historical Data natively
 async function fetchHistoricalData() {
-    console.log("Fetching historical 1s data from Binance Vision API to build 5s candles...");
+    console.log("Fetching historical 1h data from Binance Vision API...");
     for (const sym of Object.keys(PAIRS)) {
         try {
-            const res = await fetch(`https://data-api.binance.vision/api/v3/klines?symbol=${sym}&interval=1s&limit=500`);
+            // Changed interval to '1h'
+            const res = await fetch(`https://data-api.binance.vision/api/v3/klines?symbol=${sym}&interval=1h&limit=${MAX_CANDLES}`);
             if (!res.ok) throw new Error(`HTTP ${res.status}`);
             const data = await res.json();
             
-            let aggregated = {};
-            for (const k of data) {
-                const t = k[0]; 
-                const open = parseFloat(k[1]);
-                const high = parseFloat(k[2]);
-                const low = parseFloat(k[3]);
-                const close = parseFloat(k[4]);
-                
-                const bucket = Math.floor(t / 5000) * 5000;
-                
-                if (!aggregated[bucket]) {
-                    aggregated[bucket] = { time: bucket, open, high, low, close, alerted: false };
-                } else {
-                    aggregated[bucket].high = Math.max(aggregated[bucket].high, high);
-                    aggregated[bucket].low = Math.min(aggregated[bucket].low, low);
-                    aggregated[bucket].close = close; 
-                }
-            }
+            // Map the native 1h candles directly
+            history[sym] = data.map(k => ({
+                time: k[0], // Binance gives us the exact 1h bucket start time
+                open: parseFloat(k[1]),
+                high: parseFloat(k[2]),
+                low: parseFloat(k[3]),
+                close: parseFloat(k[4]),
+                alerted: false
+            }));
             
-            let sortedBuckets = Object.values(aggregated).sort((a, b) => a.time - b.time);
-            if (sortedBuckets.length > MAX_CANDLES) sortedBuckets = sortedBuckets.slice(-MAX_CANDLES);
-            
-            history[sym] = sortedBuckets;
             calculateAllEMA(sym);
-            console.log(`Loaded ${history[sym].length} 5s candles for ${PAIRS[sym]}`);
+            console.log(`Loaded ${history[sym].length} 1h candles for ${PAIRS[sym]}`);
         } catch (e) {
-            console.error(`Could not fetch REST data for ${sym}. Building live via WebSocket...`, e.message);
+            console.error(`Could not fetch REST data for ${sym}...`, e.message);
             history[sym] = []; 
         }
     }
@@ -162,14 +185,14 @@ async function fetchHistoricalData() {
 
 let ws;
 function connectBinanceWS() {
-    const streams = Object.keys(PAIRS).map(sym => `${sym.toLowerCase()}@kline_1s`).join('/');
-    // Using 'data-stream.binance.vision' to bypass US Server 451 errors
+    // Changed streams to 'kline_1h'
+    const streams = Object.keys(PAIRS).map(sym => `${sym.toLowerCase()}@kline_1h`).join('/');
     const wsUrl = `wss://data-stream.binance.vision:9443/ws/${streams}`;
     
     ws = new WebSocket(wsUrl);
     
     ws.on('open', () => {
-        console.log("Connected to Binance Vision WebSocket. Live monitoring 5s candles.");
+        console.log("Connected to Binance Vision WebSocket. Live monitoring 1h candles.");
     });
     
     ws.on('message', (data) => {
@@ -179,14 +202,12 @@ function connectBinanceWS() {
             if (!PAIRS[sym]) return;
             
             const k = payload.k;
-            const t = k.t; 
+            const bucket = k.t; // 1-Hour bucket time directly from Binance
             const currentPrice = parseFloat(k.c);
             const high = parseFloat(k.h);
             const low = parseFloat(k.l);
             const open = parseFloat(k.o);
             
-            // Mathematically group the 1s stream into exact 5s buckets
-            const bucket = Math.floor(t / 5000) * 5000; 
             const symHistory = history[sym];
             
             if (symHistory.length === 0) {
@@ -196,6 +217,7 @@ function connectBinanceWS() {
             
             let lastCandle = symHistory[symHistory.length - 1];
             
+            // Update the current 1-hour candle or create a new one
             if (lastCandle.time === bucket) {
                 lastCandle.high = Math.max(lastCandle.high, high);
                 lastCandle.low = Math.min(lastCandle.low, low);
@@ -214,7 +236,7 @@ function connectBinanceWS() {
                 if (lastCandle.low <= currentEma && lastCandle.high >= currentEma) {
                     if (!lastCandle.alerted) {
                         sendTelegramAlert(sym, currentPrice, currentEma);
-                        lastCandle.alerted = true;
+                        lastCandle.alerted = true; // Set to true so it doesn't spam within the same 1h candle
                     }
                 }
             }
@@ -234,6 +256,7 @@ function connectBinanceWS() {
 // --- BOOT UP ---
 async function start() {
     await fetchHistoricalData();
+    await announceStartupCrosses(); // Check and send the last cross info to Telegram!
     connectBinanceWS();
 }
 
