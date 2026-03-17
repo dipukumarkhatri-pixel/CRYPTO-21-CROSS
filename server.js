@@ -25,9 +25,9 @@ Object.keys(PAIRS).forEach(sym => {
     lastAlertTime[sym] = 0;
 });
 
-// --- 1. EXPRESS SERVER (For Render & CronJobs) ---
+// --- 1. EXPRESS SERVER ---
 app.get('/ping', (req, res) => {
-    res.status(200).send("Binance 1-Hour EMA Bot is awake!");
+    res.status(200).send("Binance 60-Min EMA Bot is awake!");
 });
 
 app.listen(PORT, () => {
@@ -43,12 +43,12 @@ async function sendTelegramAlert(symbol, price, ema) {
     if (now - lastAlertTime[symbol] < 300000) return; 
 
     const pairName = PAIRS[symbol];
-    const msg = `🚨 *${pairName} ALERT*\n\nPrice touched the 21 EMA!\nPrice: ${price.toFixed(4)}\nEMA: ${ema.toFixed(4)}\nTimeframe: 1h`;
+    const msg = `🚨 *${pairName} ALERT*\n\nPrice touched the 21 EMA!\nPrice: ${price.toFixed(4)}\nEMA: ${ema.toFixed(4)}\nTimeframe: 60m`;
     const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage?chat_id=${TELEGRAM_CHAT_ID}&text=${encodeURIComponent(msg)}&parse_mode=Markdown`;
 
     try {
         await fetch(url);
-        console.log(`[${new Date().toLocaleTimeString()}] Alert sent to Telegram for ${pairName}!`);
+        console.log(`[${new Date().toLocaleTimeString()}] 60m Alert sent to Telegram for ${pairName}!`);
         lastAlertTime[symbol] = now;
     } catch (error) {
         console.error(`Failed to send Telegram message for ${pairName}:`, error);
@@ -59,7 +59,7 @@ async function sendTelegramAlert(symbol, price, ema) {
 let lastUpdateId = 0;
 
 async function sendStatusMessage(targetChatId) {
-    let statusMsg = `📊 *Live Market Status (1-Hour Timeframe)*\n\n`;
+    let statusMsg = `📊 *Live Market Status (60m Timeframe)*\n\n`;
     let warmingUp = false;
 
     for (const sym in PAIRS) {
@@ -74,9 +74,9 @@ async function sendStatusMessage(targetChatId) {
     }
 
     if (warmingUp) {
-        statusMsg = "⏳ *Bot is currently warming up!*\nGathering 1h candles. Please try again in a moment.";
+        statusMsg = "⏳ *Bot is currently warming up!*\nGathering 60m candles. Please try again in a moment.";
     } else {
-        statusMsg += `\n_Monitoring 1h timeframe 24/7..._`;
+        statusMsg += `\n_Monitoring 60m timeframe 24/7..._`;
     }
     
     await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage?chat_id=${targetChatId}&text=${encodeURIComponent(statusMsg)}&parse_mode=Markdown`);
@@ -121,7 +121,7 @@ function calculateAllEMA(symbol) {
 
 // Check and Announce the Last Cross on Startup
 async function announceStartupCrosses() {
-    let msg = `🚀 *Bot Deployed Successfully*\n_Monitoring 1-Hour Timeframe_\n\n*Last 21 EMA Touches:*\n`;
+    let msg = `🚀 *Bot Deployed Successfully*\n_Monitoring 60-Minute Timeframe_\n\n*Last 21 EMA Touches (60m):*\n`;
     
     for (const sym in PAIRS) {
         const symHistory = history[sym];
@@ -138,15 +138,15 @@ async function announceStartupCrosses() {
 
         if (lastCross) {
             const dateStr = new Date(lastCross.time).toLocaleString('en-US', { timeZone: 'Asia/Kolkata' });
-            msg += `• *${PAIRS[sym]}*: ${lastCross.ema.toFixed(4)} (on ${dateStr} IST)\n`;
+            msg += `• *${PAIRS[sym]}*: Crossed EMA at ${lastCross.ema.toFixed(4)}\n  🕒 _${dateStr} IST_\n`;
         } else {
             msg += `• *${PAIRS[sym]}*: No touch in the last 100 hours\n`;
         }
     }
 
-    console.log("\n--- STARTUP REPORT ---");
-    console.log(msg.replace(/\*/g, '').replace(/_/g, '')); // Log to Render console without markdown
-    console.log("----------------------\n");
+    console.log("\n--- STARTUP REPORT (60m) ---");
+    console.log(msg.replace(/\*/g, '').replace(/_/g, '')); 
+    console.log("----------------------------\n");
 
     if (TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID) {
         const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage?chat_id=${TELEGRAM_CHAT_ID}&text=${encodeURIComponent(msg)}&parse_mode=Markdown`;
@@ -154,19 +154,18 @@ async function announceStartupCrosses() {
     }
 }
 
-// Fetch 1-Hour Historical Data natively
+// Fetch 60-Minute Historical Data Natively
 async function fetchHistoricalData() {
     console.log("Fetching historical 1h data from Binance Vision API...");
     for (const sym of Object.keys(PAIRS)) {
         try {
-            // Changed interval to '1h'
+            // Native 1-Hour (60m) endpoint
             const res = await fetch(`https://data-api.binance.vision/api/v3/klines?symbol=${sym}&interval=1h&limit=${MAX_CANDLES}`);
             if (!res.ok) throw new Error(`HTTP ${res.status}`);
             const data = await res.json();
             
-            // Map the native 1h candles directly
             history[sym] = data.map(k => ({
-                time: k[0], // Binance gives us the exact 1h bucket start time
+                time: k[0], 
                 open: parseFloat(k[1]),
                 high: parseFloat(k[2]),
                 low: parseFloat(k[3]),
@@ -175,7 +174,7 @@ async function fetchHistoricalData() {
             }));
             
             calculateAllEMA(sym);
-            console.log(`Loaded ${history[sym].length} 1h candles for ${PAIRS[sym]}`);
+            console.log(`Loaded ${history[sym].length} 60m candles for ${PAIRS[sym]}`);
         } catch (e) {
             console.error(`Could not fetch REST data for ${sym}...`, e.message);
             history[sym] = []; 
@@ -185,14 +184,14 @@ async function fetchHistoricalData() {
 
 let ws;
 function connectBinanceWS() {
-    // Changed streams to 'kline_1h'
+    // Native 1-Hour (60m) WebSocket stream
     const streams = Object.keys(PAIRS).map(sym => `${sym.toLowerCase()}@kline_1h`).join('/');
     const wsUrl = `wss://data-stream.binance.vision:9443/ws/${streams}`;
     
     ws = new WebSocket(wsUrl);
     
     ws.on('open', () => {
-        console.log("Connected to Binance Vision WebSocket. Live monitoring 1h candles.");
+        console.log("Connected to Binance Vision WebSocket. Live monitoring 60m candles.");
     });
     
     ws.on('message', (data) => {
@@ -202,7 +201,7 @@ function connectBinanceWS() {
             if (!PAIRS[sym]) return;
             
             const k = payload.k;
-            const bucket = k.t; // 1-Hour bucket time directly from Binance
+            const bucket = k.t; 
             const currentPrice = parseFloat(k.c);
             const high = parseFloat(k.h);
             const low = parseFloat(k.l);
@@ -217,7 +216,6 @@ function connectBinanceWS() {
             
             let lastCandle = symHistory[symHistory.length - 1];
             
-            // Update the current 1-hour candle or create a new one
             if (lastCandle.time === bucket) {
                 lastCandle.high = Math.max(lastCandle.high, high);
                 lastCandle.low = Math.min(lastCandle.low, low);
@@ -228,7 +226,6 @@ function connectBinanceWS() {
                 lastCandle = symHistory[symHistory.length - 1];
             }
             
-            // Only trigger alerts if we have enough data for a valid EMA
             if (symHistory.length >= PERIOD) {
                 calculateAllEMA(sym);
                 const currentEma = lastCandle.ema;
@@ -236,7 +233,7 @@ function connectBinanceWS() {
                 if (lastCandle.low <= currentEma && lastCandle.high >= currentEma) {
                     if (!lastCandle.alerted) {
                         sendTelegramAlert(sym, currentPrice, currentEma);
-                        lastCandle.alerted = true; // Set to true so it doesn't spam within the same 1h candle
+                        lastCandle.alerted = true; 
                     }
                 }
             }
@@ -256,7 +253,7 @@ function connectBinanceWS() {
 // --- BOOT UP ---
 async function start() {
     await fetchHistoricalData();
-    await announceStartupCrosses(); // Check and send the last cross info to Telegram!
+    await announceStartupCrosses(); 
     connectBinanceWS();
 }
 
